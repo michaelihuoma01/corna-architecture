@@ -2,7 +2,7 @@
 
 [Corna](https://corna.shop) puts two AI agents on WhatsApp for small businesses: one the owner talks to ("block Saturday", "revenue this week", "add this product" with a photo) and one their customers talk to (browse the catalog, send a photo of what they want, build a cart, place an order, book a slot). Behind them sits a multi-tenant storefront (book, gallery, shop) on each business's own subdomain. Owners never need the dashboard; the agents run the day.
 
-This repo is a design write-up only. The product code is private. It documents how two Claude-driven agents were made safe enough to take orders and move money, and how one Next.js app serves many businesses without leaking between them.
+This repo is a design write-up only. The product code is private. It documents how two Claude-driven agents were made safe enough to take orders and bookings that settle through the business's own payment provider, and how one Next.js app serves many businesses without leaking between them.
 
 Built solo, July to September 2026. Anthropic Claude (tool use, vision), Meta WhatsApp Cloud API, Next.js 16, Postgres, Stripe, Vercel.
 
@@ -23,7 +23,7 @@ flowchart LR
 
 ## How the agents are built
 
-Both agents are Claude with forced tool use. The model never writes to the database; it calls tools that **stage** an action, and a human tap commits it.
+Both agents are Claude, limited to a fixed set of tools; a reply that is not a tool call cannot change anything. The model never writes to the database; it calls tools that **stage** an action, and a human tap commits it.
 
 **Customer agent tools:** `get_business_info`, `browse_catalog`, `send_product_photo`, `view_cart`, `update_cart`, `place_order`, `check_availability`, `book_slot`, `ask_owner`, plus `send_store_link`. `place_order` and `book_slot` stage a pending action; the customer taps "Place order" or "Confirm booking"; only then does the shared checkout or booking path run, the same code the web storefront uses.
 
