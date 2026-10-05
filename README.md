@@ -1,10 +1,51 @@
 # Corna: architecture write-up
 
-[Corna](https://corna.shop) is a multi-tenant commerce platform for small businesses that sell and take bookings over WhatsApp. Each business gets a branded storefront on its own subdomain (book, gallery, shop), a WhatsApp assistant the owner talks to, and a WhatsApp assistant its customers talk to. Owners never need the dashboard; the bot can run the day.
+[Corna](https://corna.shop) puts two AI agents on WhatsApp for small businesses: one the owner talks to ("block Saturday", "revenue this week", "add this product" with a photo) and one their customers talk to (browse the catalog, send a photo of what they want, build a cart, place an order, book a slot). Behind them sits a multi-tenant storefront (book, gallery, shop) on each business's own subdomain. Owners never need the dashboard; the agents run the day.
 
-This repo is a design write-up only. The product code is private. It exists to document the decisions that made a single Next.js app safely serve many businesses and two LLM-driven chat agents that can move money.
+This repo is a design write-up only. The product code is private. It documents how two Claude-driven agents were made safe enough to take orders and move money, and how one Next.js app serves many businesses without leaking between them.
 
-Built solo, July to September 2026. Next.js 16, Postgres, Anthropic Claude, Meta WhatsApp Cloud API, Stripe, Vercel.
+Built solo, July to September 2026. Anthropic Claude (tool use, vision), Meta WhatsApp Cloud API, Next.js 16, Postgres, Stripe, Vercel.
+
+## The agents, in one picture
+
+```mermaid
+flowchart LR
+    C[Customer on WhatsApp] -->|text or photo| W[Webhook]
+    O[Owner on WhatsApp] -->|text or photo| W
+    W --> R[Route: which business,\nwhich role?]
+    R --> CA[Customer agent\nClaude + 9 tools]
+    R --> OA[Owner agent\nClaude + tools]
+    CA --> S[(Staged action)]
+    OA --> S
+    S -->|tap Confirm| DB[(Postgres)]
+    CA -.->|can't answer| H[Hand off to owner]
+```
+
+## How the agents are built
+
+Both agents are Claude with forced tool use. The model never writes to the database; it calls tools that **stage** an action, and a human tap commits it.
+
+**Customer agent tools:** `get_business_info`, `browse_catalog`, `send_product_photo`, `view_cart`, `update_cart`, `place_order`, `check_availability`, `book_slot`, `ask_owner`, plus `send_store_link`. `place_order` and `book_slot` stage a pending action; the customer taps "Place order" or "Confirm booking"; only then does the shared checkout or booking path run, the same code the web storefront uses.
+
+**Owner agent tools:** revenue and schedule reads, block time, walk-in bookings, accept or reject a booking, create a product from a photo, edit prices, mark orders paid. Every write ends in Confirm / Cancel buttons.
+
+**Vision.** A customer sends a photo of a perfume bottle; it goes to the model as an image block alongside the catalog, and the agent matches it to a product or says it can't. An owner sends a photo with "add this, 120 dirhams"; the agent stages `product_create` with the photo attached, and Confirm creates the product and enables the shop.
+
+**Three tiers, cheapest first.** A deterministic regex layer handles canonical commands with no model call. Claude (Haiku by default, swappable by env) handles natural language with forced tool use. If the model is unavailable, the bot degrades to the regex tier instead of going silent.
+
+**Never a dead end.** Prompt rule nine says the agent must always hand off rather than guess. A code safety net enforces it: a photo turn that produces no tool call triggers the hand-off automatically. `ask_owner` pauses the bot for that customer for four hours, alerts the owner with a Resume button, and relays the customer's messages in the meantime.
+
+**Guardrails that live in code, not in the prompt:**
+
+- The model never chooses the tenant. `business_id` is resolved server-side from the sender's phone (owner) or the receiving number or a `#slug` opener (customer), then injected into every tool. The agent cannot address another business because it never sees the choice.
+- Links are never pasted as text. Store and order links go out as WhatsApp `cta_url` buttons, and order URLs are re-verified against business and customer phone before sending.
+- Items marked price-on-request are never priced or carted by the model.
+- Deposit-taking services are refused in chat and sent to the storefront, so money for bookings only moves through the verified payment path.
+- Model output is passed through a WhatsApp formatter before sending, so markdown the model emits never reaches a customer raw.
+
+**Testing agents without a model.** `BotContext.makeAgentClient` lets tests script the model's tool calls, so the integration suite exercises every staged action and confirm path deterministically. A two-seat simulator in the dashboard (owner seat, customer seat with a synthetic number) lets a tenant try their own shop before going live.
+
+**Memory and state.** Per (business, phone) state lives in `customer_sessions`: cart, history, name, hand-off window. Owner sessions hold pending images for two hours so a photo can be followed by instructions.
 
 ## One app, four surfaces
 
